@@ -1,0 +1,32 @@
+# Company data and generated manifests must never be pushed.
+/data/
+/private_data/
+/artifacts/
+/outputs/
+/checkpoints/
+/logs/
+/wandb/
+*.parquet
+*.arrow
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+
+# Local configuration and credentials.
+.env
+*.local.yaml
+*.local.yml
+*.local.json
+
+# Python/editor caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.idea/
+.vscode/
+
+# Upstream working trees are reconstructed on the training server.
+third_party/

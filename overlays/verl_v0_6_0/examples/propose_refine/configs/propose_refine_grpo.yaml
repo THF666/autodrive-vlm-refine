@@ -1,0 +1,33 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  max_prompt_length: 2048
+  max_response_length: 2048
+  train_batch_size: 256
+  return_raw_chat: True
+  return_multi_modal_inputs: False
+  custom_cls:
+    path: "./examples/propose_refine/dataset.py"
+    name: CustomRLHFDataset
+
+actor_rollout_ref:
+  hybrid_engine: True
+  rollout:
+    name: sglang
+    agent:
+      default_agent_loop: tool_agent
+    multi_turn:
+      enable: True
+      max_user_turns: 5
+      max_assistant_turns: 5
+      interaction_config_path: $./examples/propose_refine/configs/propose_refine_interaction.yaml
+
+custom_reward_function:
+  path: "examples/propose_refine/reward.py"
+  name: compute_score
