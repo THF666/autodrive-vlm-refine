@@ -103,18 +103,37 @@ python -m tools.data.build_refine_sft \
     /private/work/sft/business_12k.jsonl \
     /private/work/sft/visionreasoner_4k.jsonl \
     /private/work/sft/autodrive_public_4k.jsonl \
-  --output /private/work/sft/refine_sft_20k.jsonl \
+  --output /private/work/sft/refine_sft_20k_draft.jsonl \
   --samples 20000 \
   --seed 20250715
 ```
 
-数据生成器的默认错误分布为：偏框 32%、漏检 18%、误检 14%、重复框 10%、混合错误 20%、近正确 6%。首轮保持不变；待业务错误统计出来后再按真实分布调权重。
+数据生成器的默认错误分布为：偏框 32%、漏检 18%、误检 14%、重复框 10%、混合错误 20%、近正确 6%。首轮保持不变；待业务错误统计出来后再按真实分布调权重。这个文件只是 oracle answer 已验证的 draft，其中 `<think>` 是占位模板，不能直接作为最终 CoT 冷启动数据。
+
+导出公司 VLM CoT 请求：
+
+```bash
+python -m tools.data.prepare_refine_cot_requests \
+  --input /private/work/sft/refine_sft_20k_draft.jsonl \
+  --output /private/work/api_build/cot_requests.jsonl
+```
+
+公司 API 调用程序读取每行的 `image + messages`，让 VLM 根据图像、query、proposal 和锁定的 oracle action 只返回 `request_id + cot`。得到 `/private/work/api_build/cot_responses.jsonl` 后合并：
+
+```bash
+python -m tools.data.merge_refine_cot_responses \
+  --draft /private/work/sft/refine_sft_20k_draft.jsonl \
+  --responses /private/work/api_build/cot_responses.jsonl \
+  --output /private/work/sft/refine_sft_20k_vlm_cot.jsonl
+```
+
+合并器只替换 `<think>`，不会采用 API 返回的任何 box/action。详细请求、响应和质检契约见 [三阶段数据准备手册](THREE_STAGE_DATA_PREPARATION.md)。
 
 运行 LoRA SFT：
 
 ```bash
 export MODEL_PATH=/private/checkpoints/stage1/.../actor/huggingface
-export SFT_DATASET=/private/work/sft/refine_sft_20k.jsonl
+export SFT_DATASET=/private/work/sft/refine_sft_20k_vlm_cot.jsonl
 export OUTPUT_DIR=/private/checkpoints/stage2_refine_sft
 bash scripts/run_stage2_swift_sft.sh
 ```

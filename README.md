@@ -16,7 +16,7 @@
 | 阶段 | 数据 | 建议规模 | 目的 |
 |---|---:|---:|---|
 | Stage 1 Proposal GRPO | 全部业务 train + VisionReasoner 开源数据 | 约 51.7k + 4k | 业务域迁移、多目标 box/point 输出 |
-| Stage 2 Refine SFT | 业务 12k + VisionReasoner 4k + 自动驾驶公开数据 4k | 20k | 学会偏框修正、删除误检、补漏检 |
+| Stage 2 Refine SFT | 业务 12k + VisionReasoner 4k + 自动驾驶公开数据 4k | 20k | 公司 VLM 构造视觉 CoT，程序锁定 refine action |
 | Stage 3 Refine GRPO | Stage 1/2 在业务 train 上的最难样本 | 8k | 用奖励继续强化实际纠错能力 |
 | Test | 完整隔离的约 5.7k 业务图像 | 10% | 只做最终比较 |
 

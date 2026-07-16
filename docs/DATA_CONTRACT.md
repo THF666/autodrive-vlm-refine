@@ -63,7 +63,7 @@
 
 ## 5. Stage 2 ms-swift JSONL
 
-生成器输出官方标准的 `messages + images`：
+基础生成器先输出官方标准的 `messages + images` draft：
 
 ```json
 {
@@ -83,7 +83,7 @@
 - 误检/重复框：`action: "delete"`。
 - 漏检：放入 `new_items`，同时给 `bbox_2d` 和框中心 `point_2d`。
 
-每个生成样本都会在写出前回放 action；只有最终 boxes 与 GT 完全一致才会通过。
+每个 draft 都会在写出前回放 action；只有最终 boxes 与 GT 完全一致才会通过。随后使用 `prepare_refine_cot_requests.py` 把图像、query、proposal 和锁定的 oracle answer 交给公司 VLM 生成视觉 CoT，再由 `merge_refine_cot_responses.py` 只替换 `<think>`。最终 `<answer>` 始终来自程序计算，不能由 API 改写。
 
 ## 6. Stage 3 hard-case 输入
 

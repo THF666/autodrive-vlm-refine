@@ -184,15 +184,11 @@ python -m tools.data.combine_hf_datasets \
   --seed 20250715
 ```
 
-### 4.3 公司 API 在 Stage 1 的用途
+### 4.3 公司 VLM API 不参与 Stage 1 box 构造
 
-Stage 1 GT 不应由大模型 API 改写。API 只适合：
+公司 VLM API 的定位是为 Stage 2 构造图像条件 CoT，不用于预测 Stage 1 的 box。Stage 1 的 GT 只来自人工 box 标注，proposal 由训练中的 Qwen2.5-VL rollout 产生。
 
-- 为单一业务类别生成少量等价问题表达，例如“定位所有目标”“找出图中的目标物体”。
-- 如果 API 是 VLM，可在训练前做标注质检，标记“疑似漏标、框明显偏离、图像不可用”，交给人工复核。
-- 生成数据审计标签或简短场景描述，但不能把 API 预测直接当 GT。
-
-问题表达不宜过度多样化。若业务部署时始终使用固定 prompt，至少 70% Stage 1 数据应保持部署 prompt，其他表达只作为鲁棒性增强。
+若业务部署时始终使用固定 prompt，Stage 1 应直接使用真实类别名称和部署 prompt，例如 `vehicle` 或具体业务目标名称，不能用含义模糊的 `target object` 代替真实类别。
 
 ## 5. Stage 2：Refine SFT 数据
 
@@ -212,11 +208,10 @@ Stage 2 不是只给 GT box，而是给模型一组“上一次预测 proposal�
 
 | Proposal 来源 | 比例 | 用途 |
 |---|---:|---|
-| Stage 1 模型真实预测 | 50% | 贴近当前模型的真实错误分布 |
-| 程序合成错误 | 30% | 精确覆盖偏框、漏检、误检、重复框 |
-| 公司 VLM API 预测 | 20% | 增加不同模型产生的错误形态 |
+| Stage 1 模型真实预测 | 60% | 贴近当前 Qwen2.5-VL 的真实错误分布 |
+| 程序合成错误 | 40% | 精确覆盖偏框、漏检、误检、重复框 |
 
-若公司 API 只有文本能力，第三项并入前两项，API 只负责文本增强。
+公司 VLM API 不负责产生 proposal。它在 proposal 和 oracle refine action 都确定后查看图像，为 SFT assistant answer 生成视觉 CoT。
 
 ### 5.2 Proposal 格式
 
@@ -227,7 +222,7 @@ Stage 2 不是只给 GT box，而是给模型一组“上一次预测 proposal�
 ]
 ```
 
-proposal 可来自 Stage 1 推理、公司 VLM API 或对 GT 的程序扰动。API 输出在进入数据集前必须解析、限制到 0–840、删除退化框并重新生成中心点。
+proposal 只来自 Stage 1 推理或对 GT 的程序扰动。所有 proposal 在进入数据集前都必须解析、限制到 0–840、删除退化框并重新生成中心点。
 
 ### 5.3 从 Proposal 和 GT 计算 Refine action
 
@@ -314,111 +309,143 @@ python -m tools.data.build_refine_sft \
   --seed 20250715
 ```
 
-## 6. 公司大模型 API 构造 Stage 2 数据
+## 6. 使用公司 VLM API 构造 Stage 2 CoT
 
-### 6.1 API 分为两种能力
+### 6.1 与原 `verl_fixed_2turns_v2` 数据对齐
 
-纯文本 LLM API 可以：
+原项目的冷启动文件 `grefcoco_1turn_refine_ms_swift_sft_840_saved_images_xyxy.json` 有 5150 条样本。每条数据都是：
 
-- 根据已经确定的 proposal、GT 和 action 生成简短、可核验的 `<think>` 理由。
-- 生成少量问题表达变体。
-- 对已有理由做格式修复、去重和语言统一。
+```text
+输入：图像 + 目标 query + previous predictions + Refine 输出规范
+输出：<think>图像条件的视觉纠错过程</think>
+     <answer>per_bbox/delete/new_items</answer>
+```
 
-它不能看图，因此不能判断 proposal 是否真的符合图像，也不能负责生成数值 GT。
+其中 `<think>` 不是通用文本模板，而是结合图像内容判断候选框是否匹配目标、是否覆盖完整、是否为误检以及是否存在漏检。公司 VLM API 应当复现的正是这个“视觉 CoT 教师”角色，不是检测器角色。
 
-多模态 VLM API 可以额外：
+### 6.2 正确的数据构造顺序
 
-- 输入图像和目标名称，产生另一组 proposal，作为“待纠错的模型预测”。
-- 对 Stage 1 预测做错误类型标注，例如偏框、漏检、重复框、疑似误检。
-- 辅助找出可能漏标或异常图片，但只能进入人工复核队列。
+```text
+人工 GT box
+  → Stage 1 推理或程序扰动得到 proposal
+  → 程序匹配 proposal 与 GT
+  → 程序计算并 replay 验证 oracle refine action
+  → 图像 + query + proposal + 已锁定 action 发送给公司 VLM
+  → VLM 只生成视觉 CoT
+  → 程序把 CoT 放入 <think>，把原 oracle action 放入 <answer>
+  → 最终格式校验和抽样人工检查
+```
 
-无论哪种 API，GT、matching、delta、delete、new_items 和 replay 都必须由本地程序决定。
+这样 VLM 可以根据图像写出有内容的推理，同时不会产生错误 delta、遗漏 `new_items` 或篡改 GT。
 
-### 6.2 推荐 API 输入契约
+### 6.3 VLM 请求内容
 
-发送给文本 API 的内容不需要包含图像，只发送脱敏结构：
+每个请求必须包含：
+
+- 840×840 图像。
+- 使用真实业务类别名称的 query。
+- 带 B1、B2……ID 的 previous predictions。
+- 已经由程序计算并 replay 通过的 oracle refine answer。
+- 简化 action summary：哪些 ID 调整、哪些删除、漏了几个目标。
+
+VLM 得到 oracle answer 是为了生成与正确动作一致的视觉解释；它不需要也不允许重新计算 answer。
+
+仓库可先导出与具体 API 协议无关的请求 JSONL：
+
+```bash
+python -m tools.data.prepare_refine_cot_requests \
+  --input /private/work/sft/refine_sft_20k_draft.jsonl \
+  --output /private/work/api_build/cot_requests.jsonl
+```
+
+每行请求结构：
 
 ```json
 {
-  "sample_id": "internal-hash",
-  "target": "target object",
-  "proposal": [
-    {"id": "B1", "bbox_2d": [92, 126, 230, 270]},
-    {"id": "B2", "bbox_2d": [600, 100, 690, 220]}
+  "request_id": "sha256...",
+  "image": "/private/work/images_840/train/scene/frame.jpg",
+  "messages": [
+    {"role": "system", "content": "Inspect the image and generate visual correction reasoning..."},
+    {"role": "user", "content": "query + proposal + VERIFIED_REFINE_ACTION + ACTION_SUMMARY"}
   ],
-  "verified_actions": {
-    "correct": ["B1"],
+  "oracle_answer": {
+    "per_bbox": [],
+    "new_items": []
+  },
+  "action_summary": {
+    "correct_or_adjust": ["B1"],
     "delete": ["B2"],
     "add_count": 1
-  },
-  "constraints": {
-    "do_not_change_coordinates": true,
-    "max_sentences": 2,
-    "output_language": "English"
   }
 }
 ```
 
-要求 API 只返回：
+具体 API adapter 读取 `image + messages`，按照公司协议上传图片并调用 VLM。
+
+### 6.4 VLM 输出契约
+
+要求公司 VLM 严格返回：
 
 ```json
 {
-  "sample_id": "internal-hash",
-  "reason": "B1 needs a small boundary correction, B2 is a false positive, and one object is missing.",
-  "quality_flags": []
+  "request_id": "sha256...",
+  "cot": "B1 visually corresponds to the target but its boundary is too loose on the right. B2 covers a background distractor, and another target instance is visible farther ahead but was missed.",
+  "model": "company-vlm-model-name"
 }
 ```
 
-程序把 `reason` 放入 `<think>`，把本地已经验证过的 action JSON 原样放入 `<answer>`。API 不应返回完整 assistant answer，否则容易篡改数字。
+CoT 应满足：
 
-### 6.3 推荐 API System Prompt
+- 必须基于图像描述目标类别、可见属性、相对位置或候选框覆盖情况。
+- 应解释需要 correction、delete 或 add 的视觉原因。
+- 不输出 `<think>`、`<answer>` 标签。
+- 不重复 JSON answer，不修改坐标、ID、动作和数量。
+- 不出现“根据 GT”“oracle 告诉我”等泄漏教师信息的表述。
+- 建议 1–4 句；多目标复杂样本可以稍长，但不写空泛的通用模板。
 
-```text
-You generate a short correction rationale for 2D object detection training.
-Use only the supplied verified action summary.
-Do not invent objects, coordinates, IDs, counts, or actions.
-Do not repeat the full JSON.
-Return strict JSON with keys sample_id, reason, and quality_flags.
-The reason must be one or two concise sentences.
+### 6.5 合并 CoT 并锁定 answer
+
+API 原始响应保存为 JSONL 后执行：
+
+```bash
+python -m tools.data.merge_refine_cot_responses \
+  --draft /private/work/sft/refine_sft_20k_draft.jsonl \
+  --responses /private/work/api_build/cot_responses.jsonl \
+  --output /private/work/sft/refine_sft_20k_vlm_cot.jsonl
 ```
 
-如果 API 支持 JSON Schema/structured output，应强制使用；如果不支持，则本地解析失败后最多重试两次，再退回确定性模板。
+合并器会：
 
-### 6.4 推荐生成比例
+1. 用确定性 request ID 对齐请求和响应。
+2. 拒绝缺失、重复、过短、过长或带 `<answer>` 标签的 CoT。
+3. 只替换 `<think>` 内容。
+4. 保留原始已验证 `<answer>`，不采用 VLM 返回的任何数值答案。
+5. 记录 `cot_source=company_vlm_api`、request ID 和 API model。
 
-不建议让 API 重写全部 20k。首版可采用：
+工具同时支持本项目的 `messages + images` JSONL，以及原 Refine 项目的 `conversations + <img>path</img>` JSON list。
 
-- 12k–14k：确定性模板理由，稳定且便于回归。
-- 6k–8k：API 增强理由，优先覆盖 mixed、missing、duplicate 等复杂样本。
-- 其中约 4k proposal 可来自公司 VLM API，但 action 仍由 GT 自动计算。
+### 6.6 20k CoT 生成规模与质检
 
-这种混合方式能增加表达和错误分布多样性，同时保留足够多完全确定、可重复的数据。
+目标是得到 20k 条通过校验的 VLM CoT，而不是 20k 个 API 原始响应。建议先发 23k–25k 个候选请求，经过以下过滤后保留 20k：
 
-### 6.5 API 工程要求
+- JSON/标签/长度不合法。
+- CoT 与 action 冲突，例如 oracle 是 delete，但理由声称候选正确且应保留。
+- CoT 描述的类别与业务目标不一致。
+- 多条样本出现高度重复的套话。
+- 图像不可用、proposal/GT/action replay 失败。
 
-API 构造程序至少应支持：
+先人工检查至少 300 条，按 `jitter/missing/false_positive/duplicate/mixed/near_correct` 分层抽样。重点检查 CoT 是否真的看图、是否与 locked answer 一致，而不只是语言是否通顺。
+
+### 6.7 API 工程要求
 
 - endpoint、model、token 全部通过环境变量传入，绝不写入代码或 Git。
 - 限并发、指数退避、超时、断点续跑。
-- 用 `request_hash` 缓存，避免重复计费。
-- 保存 `api_model`、`prompt_version`、`request_hash`、时间和校验结果。
-- API 原始响应与最终训练 JSONL 分开保存。
+- 用 `request_id` 缓存，避免重复计费。
+- 保存 API model、prompt version、时间、原始响应和校验结果。
 - 失败样本进入重试/人工复核清单，不能静默丢失。
 - 若 API 不在公司内网，未经数据安全批准不得上传业务图像。
 
-推荐私有目录：
-
-```text
-/private/work/api_build/
-  requests.jsonl
-  raw_responses.jsonl
-  cache/
-  failed.jsonl
-  validated_reasoning.jsonl
-  build_manifest.json
-```
-
-当前仓库尚未实现公司 API adapter，因为还不知道接口是否兼容 OpenAI 协议、是否支持图片、鉴权方式和并发限制。拿到接口文档后，应新增独立的 `enrich_with_company_api.py`，不要把 API 调用直接塞进基础转换器；这样纯离线确定性数据仍可随时复现。
+当前已经实现请求导出和响应合并；直接调用公司 API 的 adapter 仍需接口协议，包括 endpoint、鉴权、图片传输方式、响应字段和并发限制。
 
 ## 7. Stage 3：两轮 Refine GRPO 数据
 
@@ -482,12 +509,9 @@ python -m tools.data.convert_to_hf_detection_dataset \
   --output-dir /private/work/hf/stage3_hard_8k
 ```
 
-### 7.3 公司 API 在 Stage 3 的用途
+### 7.3 公司 VLM API 不参与 Stage 3 rollout
 
-- 不用于生成 GT 或 reward 分数。
-- VLM API 可作为另一个 proposal 模型，帮助发现 Stage 1 没覆盖的错误形态。
-- 文本 API 可给 hard case 打标签或生成分析报告，但这些文本默认不进入 GRPO 输入。
-- hard-case 排序应以本地可复现的 Precision/Recall/F1、IoU 和格式有效率为准，而不是 API 主观评分。
+公司 VLM API 只用于 Stage 2 冷启动 CoT 构造，不用于 Stage 3 的 proposal、GT、reward 或 hard-case 评分。Stage 3 的 proposal 必须由正在训练的 Qwen2.5-VL 第一轮 rollout 产生，hard-case 排序使用本地可复现的 Precision/Recall/F1、IoU 和格式有效率。
 
 ## 8. 三阶段最终格式对照
 
@@ -498,7 +522,7 @@ python -m tools.data.convert_to_hf_detection_dataset \
 | GT | `solution` box+中心点 | assistant refine action | `solution` box+中心点 |
 | Proposal | 模型 rollout 产生 | 预先构造/推理/API 产生 | 第一轮 rollout 产生 |
 | Point 来源 | box 中心自动计算 | box 中心及中心 delta | box 中心自动计算 |
-| API 必需 | 否 | 否，可增强 | 否 |
+| 公司 VLM API | 不使用 | 用于构造图像条件 CoT | 不使用 |
 | 是否允许 test | 否 | 否 | 否 |
 
 ## 9. 每批数据的强制校验
