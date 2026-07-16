@@ -1,0 +1,5 @@
+interaction:
+  - name: "propose_refine"
+    class_name: "verl.interactions.propose_refine_interaction.ProposeRefineInteraction"
+    config:
+      max_round: 3

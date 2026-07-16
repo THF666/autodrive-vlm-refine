@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autodrive-vlm-refine"
+version = "0.1.0"
+description = "Data tooling for a three-stage Qwen2.5-VL 2D detection pipeline"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+segzero = [
+  "datasets>=3.0,<4",
+  "numpy>=1.26",
+  "pillow>=10",
+  "tqdm>=4.66",
+]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
