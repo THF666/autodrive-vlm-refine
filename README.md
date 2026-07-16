@@ -46,7 +46,7 @@ bash scripts/bootstrap_upstreams.sh
 python -m unittest discover -s tests -v
 ```
 
-之后严格按 [三阶段实践指南](docs/PRACTICE_GUIDE.md) 执行。标注 JSON 字段不确定时先看 [数据契约](docs/DATA_CONTRACT.md)；安装和同步见 [服务器手册](docs/SERVER_RUNBOOK.md)。
+之后严格按 [三阶段实践指南](docs/PRACTICE_GUIDE.md) 执行。三个阶段的精确格式、box-only 转换和公司大模型 API 构造方式见 [三阶段数据准备手册](docs/THREE_STAGE_DATA_PREPARATION.md)；标注 JSON 字段不确定时看 [数据契约](docs/DATA_CONTRACT.md)，安装和同步见 [服务器手册](docs/SERVER_RUNBOOK.md)。
 
 ## 上游边界与可行性
 
@@ -70,4 +70,3 @@ git pull
 ## License
 
 Apache-2.0。第三方来源见 [THIRD_PARTY.md](THIRD_PARTY.md)。
-
